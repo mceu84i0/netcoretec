@@ -1,0 +1,12 @@
+#!/bin/sh
+USHARE_CONF=/var/ushare.conf
+eval `flash get USER_NAME`
+
+echo "USHARE_NAME=Beeline">$USHARE_CONF
+echo "USHARE_IFACE=br0">>$USHARE_CONF
+echo "ENABLE_TELNET=yes">>$USHARE_CONF
+echo "ENABLE_DLNA=yes">>$USHARE_CONF
+echo "USHARE_ENABLED=1">>$USHARE_CONF
+echo "ENABLE_XBOX=yes">>$USHARE_CONF
+echo "ENABLE_WEB=yes">>$USHARE_CONF
+echo "USHARE_USERNAME="$USER_NAME>>$USHARE_CONF

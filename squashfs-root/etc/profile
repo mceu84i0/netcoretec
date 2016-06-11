@@ -1,0 +1,149 @@
+ifconfig lo   127.0.0.1
+
+DIRS=" ppp/peers udhcpc udhcpd dnrd run lib/misc linuxigd tmp log net-snmp system sys"
+
+for dir in $DIRS ; do
+	mkdir -p /var/$dir
+done
+#  extact web pages
+#cd /web
+#flash extr /web
+#cd /
+
+#modify by wangting
+/bin/ln -s /web /var/web
+/bin/ln -s /sys /var/sys
+
+mkdir -p /var/dns
+mkdir -p /var/cmd
+mkdir -p /var/args
+mkdir -p /var/control
+mkdir -p /var/lock
+
+#wan lan switch
+#echo 0 > /proc/wan_port
+
+echo " " > /etc/ppp/peers/rpptp
+cp /bin/pppoe.sh /var/udhcpc/eth0.deconfig
+echo " " > /var/udhcpc/eth0.deconfig
+cp /bin/pppoe.sh /var/udhcpc/eth1.deconfig
+echo " " > /var/udhcpc/eth1.deconfig
+cp /bin/pppoe.sh /var/udhcpc/br0.deconfig
+echo " " > /var/udhcpc/br0.deconfig
+cp /bin/pppoe.sh /var/udhcpc/wlan0.deconfig
+echo " " > /var/udhcpc/wlan0.deconfig
+
+cp /etc/tmp/pics* /var/linuxigd
+cp /bin/checkupfile /var/tmp/checkupfile
+cp /bin/update_main /var/tmp/update_main
+##############
+cp /bin/pppoe.sh /var/ppp/true
+echo "#!/bin/sh" > /var/ppp/true
+#echo "PASS"     >> /var/ppp/true
+
+cp /var/web/version.txt /var/tmp/version -f
+#syslog
+
+router_check.sh
+generate_conf.sh
+set_def_conf.sh
+
+/bin/logd &
+echo $! >/var/run/log.pid
+
+#gen pin
+/bin/wpspin.sh
+#generate pppoe session file
+flash gen-pppoe-session-file
+
+#check WLAN0_WLAN_DISABLED by /proc/wifiswitch
+wlan_check.sh
+
+# Start system script
+init.sh gw all
+
+#start wps
+/bin/wpsstart.sh
+
+# start web server
+webs&
+
+# daemon to monitor reload default and disable RF 
+#reload&
+
+# modify dst-cache setting
+echo 2048 > /proc/sys/net/ipv4/route/max_size
+echo 180 > /proc/sys/net/ipv4/route/gc_thresh
+echo 1 > /proc/sys/net/ipv4/route/gc_elasticity
+echo 35 > /proc/sys/net/ipv4/route/gc_interval
+echo 10 > /proc/sys/net/ipv4/route/gc_timeout
+# NW725-4096 NW715-2048 NW705-1024
+echo "1024" >/proc/sys/net/ipv4/ip_conntrack_max
+echo "30" > /proc/sys/net/ipv4/netfilter/ip_conntrack_tcp_timeout_time_wait
+echo "10" > /proc/sys/net/ipv4/netfilter/ip_conntrack_tcp_timeout_syn_sent
+echo "10" > /proc/sys/net/ipv4/netfilter/ip_conntrack_tcp_timeout_syn_recv
+echo "30" > /proc/sys/net/ipv4/netfilter/ip_conntrack_tcp_timeout_last_ack
+echo "10" > /proc/sys/net/ipv4/netfilter/ip_conntrack_tcp_timeout_fin_wait
+
+echo "420" > /proc/sys/net/ipv4/netfilter/ip_conntrack_tcp_timeout_established
+echo "5" > /proc/sys/net/ipv4/netfilter/ip_conntrack_tcp_timeout_time_wait
+echo "5" > /proc/sys/net/ipv4/netfilter/ip_conntrack_tcp_timeout_close
+echo "10" > /proc/sys/net/ipv4/netfilter/ip_conntrack_tcp_timeout_close_wait 
+
+#echo 8192 > /proc/sys/vm/min_free_kbytes
+
+echo "60" > /proc/sys/net/ipv4/netfilter/ip_conntrack_udp_timeout 
+echo "90" > /proc/sys/net/ipv4/netfilter/ip_conntrack_udp_timeout_stream
+echo "90" > /proc/sys/net/ipv4/netfilter/ip_conntrack_generic_timeout
+
+echo 1 > /proc/sys/net/ipv4/ip_forward
+echo 2048 > /proc/sys/net/core/hot_list_length
+/bin/restart_webs &
+/bin/ota_init.sh
+#sh /bin/get_mac_from_pc.sh &
+
+/bin/cdrom_wizard &
+
+
+#add port trigger
+/web/cgi-bin/cgitest.cgi port_trigger
+
+#add ftp port
+/web/cgi-bin/cgitest.cgi ftp_port
+
+
+#set wan lan link port
+/web/cgi-bin/cgitest.cgi wan_lan_link_status
+
+#snmp
+/web/cgi-bin/cgitest.cgi snmp_init
+
+#system led
+echo "8" > /proc/gpio
+
+#kill oray
+/bin/restart_oray &
+
+#ntp server
+#killall ntpd
+#/bin/ntpd -c /etc/ntp.conf
+
+#wpstest
+#sh /bin/wpstest.sh
+ 
+#add superdmz
+#/bin/superdmz_init.sh
+
+/bin/wps_detect &
+#rxxV4
+#echo 1 > /proc/zb_disable_tty
+#sh /bin/rxx.sh
+
+#lxb@2011.05.26
+#generate_passwd.sh &
+#telnetd &
+telnetd.sh
+
+igdmptd &
+
+360_udp_server &

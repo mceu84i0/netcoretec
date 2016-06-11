@@ -1,0 +1,342 @@
+#!/bin/sh
+# udhcpc bound script
+NTP_PROCESS=/var/ntp_run
+RESOLV_CONF="/etc/udhcpc/resolv.conf"
+GETMIB="flash get"
+START_FIREWALL="/bin/firewall.sh"
+TMP_RT_FILE="/tmp/default_rt"
+PIDFILE=/var/run/udhcpd.pid
+LINK_FILE="/var/ppp/link"
+eval `flash get WAN_DHCP`
+eval `flash get IP_ADDR`
+eval `flash get WAN_DEFAULT_GATEWAY`
+default_rt_flag=1
+if [ $WAN_DHCP = 13 ] || [ $WAN_DHCP = 19 ];then
+	eval `flash get PPP_GATEWAY_ENABLE`
+	eval `flash get PPP_CONNECT_TYPE`
+	#if [ -r $LINK_FILE ]; then
+	#	if [ $PPP_GATEWAY_ENABLE = 0 ]; then
+	#		default_rt_flag=0
+	#	fi 
+	#else
+	#	if [ $PPP_CONNECT_TYPE = 1 ]; then
+	#		default_rt_flag=0
+	#	fi
+	#fi
+	if [ $PPP_GATEWAY_ENABLE = 0 -a -r $LINK_FILE ] || [ $PPP_CONNECT_TYPE = 1 -a ! -r $LINK_FILE ]; then
+		default_rt_flag=0	
+	fi
+fi
+
+echo "@DHCP   interface:$interface  ip:$ip netmask:$subnet broadcast:$broadcast  router=$router"
+echo "@DHCP  siaddr=$siaddr"
+echo "@DHCP  default_rt_flag=$default_rt_flag"
+[ -n "$broadcast" ] && BROADCAST="broadcast $broadcast"
+[ -n "$subnet" ] && NETMASK="netmask $subnet"
+
+/sbin/ifconfig $interface $ip $BROADCAST $NETMASK
+echo "$ip" > /var/eth1_ip
+
+#notice: if default gw changed in mode(dhcp_pptp,l2tp_dhcp), need to re-run l2tpd,pptp for host routing that is to server
+if [ "$router" ]
+then
+	echo "deleting routers"
+	if [ $default_rt_flag = 1 ]; then
+		while route del default dev $interface
+		do :
+		done
+
+		if [ $WAN_DHCP = 13 ] || [ $WAN_DHCP = 19 ]; then
+			while route del default
+			do :
+			done
+		fi
+	fi
+
+	rm $TMP_RT_FILE -fr
+	if [ $WAN_DHCP = 17 -a $WAN_DEFAULT_GATEWAY != "0.0.0.0" ];then
+		ip route add default via $WAN_DEFAULT_GATEWAY dev $interface
+		echo $WAN_DEFAULT_GATEWAY >> $TMP_RT_FILE
+		default1=$WAN_DEFAULT_GATEWAY
+	else
+		for i in $router
+		do
+			if [ $default_rt_flag = 1 ]; then
+			#route add -net default gw $i dev $interface
+				ip route add default via $i dev $interface
+			fi
+			echo $i >> $TMP_RT_FILE
+			if [ -z "$default1" ]; then
+				default1=$i
+			fi
+		done
+	fi
+	if [ -n "$siaddr_subnet_ip" -a -n "$subnet_ip" ] && [ "$subnet_ip" != "$siaddr_subnet_ip" ] && [ -n "$siaddr" ];then
+		for i in $router
+		do
+			if [ -z "$dhcp_rt" ]; then
+				dhcp_rt=$i
+			else
+				break
+			fi
+		done
+		echo ">>>subnet:$subnet; subnet_ip:$subnet_ip; siaddr_subnet_ip:$siaddr_subnet_ip; siaddr:$siaddr; dhcp_rt:$dhcp_rt"
+		if [ -n "$dhcp_rt" ]; then
+			ip route add $siaddr via $dhcp_rt dev $interface
+		else
+			echo "ERR: $siaddr and $ip are not in the same subnet[$subnet], but don't have route to it!!!"
+		fi
+	fi
+elif [ "$siaddr" ];then  
+	if [ $default_rt_flag = 1 ]; then
+		#route add -net default gw $siaddr dev $interface
+		ip route add default via $siaddr dev $interface
+	fi
+	echo $siaddr > $TMP_RT_FILE
+	default1=$siaddr
+fi
+
+VPN_RT_FILE="/var/dhcpc_gw"
+if [ $WAN_DHCP = 8 -o $WAN_DHCP = 9 ]; then
+	cp $TMP_RT_FILE $VPN_RT_FILE -fr
+fi
+
+echo -n > $RESOLV_CONF
+[ -n "$domain" ] && echo domain $domain >> $RESOLV_CONF
+
+DNS="--cache=off"
+eval `$GETMIB DNS_MODE`
+
+#linxiaobin @2009.07.30 add for dns
+SERVERKILL=0
+
+if [ $DNS_MODE = '0' ]; then
+	#eval `$GETMIB IP_ADDR`
+	cnt=0
+	for i in $dns
+	do
+		#linxiaobin @2009.07.31 for below compare
+		if [ -z $PRI ]; then
+			PRI=$i
+		else
+			if [ -z $SEC ]; then
+				SEC=$i
+			fi
+		fi
+		cnt=`expr $cnt + 1`	
+		echo adding dns $i
+		echo nameserver $i >> $RESOLV_CONF
+		DNS="$DNS -s $i"
+		if [ -n "$default1" ]; then
+			#route add -host $i gw $default1 dev $interface
+			ip route add $i via $default1 dev $interface
+		fi
+	done
+	#linxiaobin @2009.07.31 ******************************************************************************
+	changed=0
+	oldcnt=0
+	if [ -f "/var/resolv.conf" ]; then
+		cat /var/resolv.conf | grep "nameserve" > /tmp/midresl
+		mid=`cat /tmp/midresl | cut -b12-27`
+		rm -fr /tmp/midresl
+		for ii in $mid
+		do
+			if [ -z $OLDPRI ]; then
+				OLDPRI=$ii
+			else	
+				if [ -z $OLDSEC ]; then
+					OLDSEC=$ii
+				fi
+			fi
+			oldcnt=`expr $oldcnt + 1`	
+		done
+	else
+		changed=1
+	fi
+
+	if [ $changed != 1 ]; then #here compared old dns and new dns,if different : set changed=1
+		if [ $oldcnt -ne $cnt ]; then
+			if [ $cnt -ge 2 -a $oldcnt -ge 2 ]; then
+				if [ $PRI != $OLDPRI -o $SEC != $OLDSEC ]; then
+					changed=1
+				fi
+			else
+				changed=1
+			fi
+		else
+			if [ $cnt -eq 1 ]; then
+				if [ $PRI != $OLDPRI ]; then
+					changed=1
+				fi
+			else 
+				if [ $cnt -gt 1 ]; then
+					if [ $PRI != $OLDPRI -o $SEC != $OLDSEC ]; then
+						changed=1
+					fi
+				fi #else $cnt and $oldcnt eq 0
+			fi
+		fi
+	fi	
+
+	if [ -f $PIDFILE ]; then
+		if [ $changed = 1 ]; then
+			PID=`cat $PIDFILE`
+			if [ $PID -gt 1 ]; then
+			#if [ $PID != 0 ]; then
+				echo "******************in dhcpc's $interface.bound,kill dhcpd**************************"
+				date
+				#SERVERKILL=1
+				kill -16 $PID
+				sleep 1
+				kill -9 $PID
+				killall -9 udhcpd
+			else
+				#SERVERKILL=1
+				killall udhcpd
+				sleep 1
+				killall -9 udhcpd
+			fi
+			SERVERKILL=1
+		fi
+	else
+		SERVERKILL=1
+		killall udhcpd
+		#sleep 1
+		#killall -9 udhcpd
+	fi
+	#*******************************************************************************************
+else
+	eval `$GETMIB DNS1`
+	if [ "$DNS1" != '0.0.0.0' ]; then
+		DNS="$DNS -s $DNS1"
+		echo nameserver $DNS1 >> $RESOLV_CONF
+		#route add -host $DNS1 gw $default1 dev $interface
+		ip route add $DNS1 via $default1 dev $interface
+	fi
+	eval `$GETMIB DNS2`
+	if [ "$DNS2" != '0.0.0.0' ]; then
+		DNS="$DNS -s $DNS2"
+		echo nameserver $DNS2 >> $RESOLV_CONF
+		#route add -host $DNS2 gw $default1 dev $interface
+		ip route add $DNS2 via $default1 dev $interface
+	fi
+	eval `$GETMIB DNS3`
+	if [ "$DNS3" != '0.0.0.0' ]; then
+		DNS="$DNS -s $DNS3"
+		echo nameserver $DNS3 >> $RESOLV_CONF
+		#route add -host $DNS3 gw $default1 dev $interface
+		ip route add $DNS3 via $default1 dev $interface
+	fi
+fi
+
+DNRD_PID_FILE=/var/run/dnrd.pid
+if [ -f $DNRD_PID_FILE ]; then
+	PID=`cat $DNRD_PID_FILE`
+		if [ -z "$PID" ]; then
+			killall -9 dnrd
+		else
+			kill -9 $PID 
+		fi
+	rm $DNRD_PID_FILE -f
+fi
+echo start DNS Relay Daemon
+dnrd $DNS
+
+cp $RESOLV_CONF /var/resolv.conf
+if [ $WAN_DHCP = 13 -a -r $LINK_FILE ] || [ $WAN_DHCP = 19 -a -r $LINK_FILE ]; then
+	PPP_RESOLV=/var/ppp/resolv.conf
+	cat $PPP_RESOLV | grep nameserver >> /var/resolv.conf	
+fi
+
+#linxiaobin @2009.07.31 ******************************************************************************
+if [ $SERVERKILL = 1 ]; then
+	rm -fr $PIDFILE
+	mid=`grep "init.sh" /etc/profile`
+	INITag1=`echo $mid | cut -d ' ' -f2`
+	#echo "******************************************************$INITar1"
+	dhcpdag2="gw"
+	if [ $INITag1 = "ap" ]; then
+		dhcpdag2="ap"
+	fi # here ,may use $INITag1 instead of useing dhcpdag2
+	dhcpdag1="br0" #here,if support VOIP_SUPPORT ,it should be eth0,(in init.sh) 	
+	dhcpd.sh $dhcpdag1 $dhcpdag2
+fi
+
+dhcp_loop.sh $ip $interface $subnet_ip $subnet
+# enable firewall
+echo 'Set Firewall...'
+#echo 2 > /proc/fast_nat
+if [ $WAN_DHCP = 8 ] || [ $WAN_DHCP = 9 ]; then
+	$START_FIREWALL switch_to_dhcp
+elif [ $WAN_DHCP = 13 ] || [ $WAN_DHCP = 19 ]; then
+	if [ -r $LINK_FILE ]; then
+		$START_FIREWALL
+	else
+		$START_FIREWALL switch_to_dhcp
+	fi
+else
+	$START_FIREWALL
+fi
+
+#baikl @@@@@@@###
+echo 'Set Route...'
+/bin/route.sh add
+/bin/superdmz_init.sh
+#baikl end@@@@@
+if [ $url_replease = 1 ];then
+	echo $url_replease_name > /proc/url_replease 
+fi
+#upnp.sh
+if [ -f /bin/vpn.sh ]; then
+	echo 'Setup VPN'
+	vpn.sh all
+fi
+
+#restart igmp proxy
+eval `$GETMIB IGMP_PROXY_DISABLED`
+
+. /etc/info.r
+if [ "$RALINK" = "1" ];then
+	/bin/igmpproxy.sh $WANNAME br0 ppp0 &
+elif [ "$BCM_MODE" = "1" ];then
+	/bin/igmpproxy.sh $interface &
+else
+	killall -9 igmpproxy 2> /dev/null
+	if [ $IGMP_PROXY_DISABLED = 0 ]; then
+		igmpproxy $interface br0 &
+		echo 1 > /proc/br_igmpsnoop
+	else
+		echo 0 > /proc/br_igmpsnoop
+	fi
+fi
+
+echo wan_multidrop $IGMP_PROXY_DISABLED >/proc/admin_port 
+
+#restart DDNS and ntp while that is killed in in wan disconnect
+eval `flash get DDNS_ENABLED`
+if [ $DDNS_ENABLED = 1 ]; then
+	killall -9 ddns.sh 2> /dev/null
+	rm -f /var/firstddns 2> /dev/null
+	ddns.sh all
+fi
+eval `flash get NTP_ENABLED`
+if [ $NTP_ENABLED = 1 ]; then
+	if [ ! -f $NTP_PROCESS ]; then
+		ntp.sh &
+	fi
+fi
+
+#add for pptp_over_dhcp
+if [ $WAN_DHCP = 8 ]; then
+	echo "-----------------ok, now will to connect to pptp server--------------------"
+	pptp.sh $interface &	
+elif [ $WAN_DHCP = 9 ]; then
+	echo "-----------------ok, now will to connect to l2tp server-------------------"
+	l2tp.sh $interface &	
+fi
+
+syslogd.sh
+
+#echo "bounding ok."
+
+/bin/port_trigger.sh init "$interface"

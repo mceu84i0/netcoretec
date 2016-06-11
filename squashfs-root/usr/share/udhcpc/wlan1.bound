@@ -1,0 +1,145 @@
+#!/bin/sh
+# udhcpc bound script
+
+RESOLV_CONF="/etc/udhcpc/resolv.conf"
+GETMIB="flash get"
+START_FIREWALL=firewall.sh
+TMP_RT_FILE="/tmp/default_rt"
+LINK_FILE=/var/ppp/link
+
+eval `flash get WAN_DHCP`
+
+default_rt_flag=1
+if [ $WAN_DHCP = 13 ] || [ $WAN_DHCP = 19 ];then
+	eval `flash get PPP_GATEWAY_ENABLE`
+	eval `flash get PPP_CONNECT_TYPE`
+	if [ $PPP_GATEWAY_ENABLE = 0 -a -r $LINK_FILE ] || [ $PPP_CONNECT_TYPE = 1 -a ! -r $LINK_FILE ]; then
+		default_rt_flag=0	
+	fi
+fi
+
+[ -n "$broadcast" ] && BROADCAST="broadcast $broadcast"
+[ -n "$subnet" ] && NETMASK="netmask $subnet"
+
+/sbin/ifconfig $interface $ip $BROADCAST $NETMASK
+echo "$ip" > /var/eth1_ip
+
+rm $TMP_RT_FILE -fr
+if [ "$router" ]
+then
+	echo "deleting routers"
+	if [ $default_rt_flag = 1 ]; then
+		while route del default dev $interface
+		do :
+		done
+
+		if [ $WAN_DHCP = 13 ] || [ $WAN_DHCP = 19 ]; then
+			while route del default
+			do :
+			done
+		fi
+	fi
+
+
+	for i in $router
+	do
+		if [ $default_rt_flag = 1 ]; then
+			#route add -net default gw $i dev $interface
+			ip route add default via $i dev $interface
+		fi
+		echo $i >> $TMP_RT_FILE
+		if [ -z "$default1" ]; then
+			default1=$i
+		fi
+	done
+fi
+
+VPN_RT_FILE="/var/dhcpc_gw"
+if [ $WAN_DHCP = 8 -o $WAN_DHCP = 9 ]; then
+	cp $TMP_RT_FILE $VPN_RT_FILE -fr
+fi
+
+echo -n > $RESOLV_CONF
+[ -n "$domain" ] && echo domain $domain >> $RESOLV_CONF
+
+DNS="--cache=off"
+eval `$GETMIB DNS_MODE`
+if [ $DNS_MODE = '0' ]; then
+	for i in $dns
+	do
+		echo adding dns $i
+		echo nameserver $i >> $RESOLV_CONF
+		DNS="$DNS -s $i"
+		if [ -n "$default1" ]; then
+			route add -host $i gw $default1 dev $interface
+		fi
+	done
+else
+	eval `$GETMIB DNS1`
+	if [ "$DNS1" != '0.0.0.0' ]; then
+		DNS="$DNS -s $DNS1"
+		#route add -host $DNS1 gw $default1 dev $interface
+		ip route add $DNS1 via $default1 dev $interface
+	fi
+	eval `$GETMIB DNS2`
+	if [ "$DNS2" != '0.0.0.0' ]; then
+		DNS="$DNS -s $DNS2"
+		#route add -host $DNS2 gw $default1 dev $interface
+		ip route add $DNS2 via $default1 dev $interface
+	fi
+	eval `$GETMIB DNS3`
+	if [ "$DNS3" != '0.0.0.0' ]; then
+		DNS="$DNS -s $DNS3"
+		#route add -host $DNS3 gw $default1 dev $interface
+		ip route add $DNS3 via $default1 dev $interface
+	fi
+fi
+
+echo start DNS Relay Daemon
+DNRD_PID_FILE=/var/run/dnrd.pid
+if [ -f $DNRD_PID_FILE ]; then
+	PID=`cat $DNRD_PID_FILE`
+		if [ -z "$PID" ]; then
+			killall -9 dnrd
+		else
+			kill -9 $PID 
+		fi
+	rm $DNRD_PID_FILE -f
+fi
+dnrd $DNS
+
+# enable firewall
+echo 'Set Firewall...'
+if [ $WAN_DHCP = 8 ] || [ $WAN_DHCP = 9 ]; then
+	$START_FIREWALL switch_to_dhcp
+elif [ $WAN_DHCP = 13 ] || [ $WAN_DHCP = 19 ]; then
+	if [ -r $LINK_FILE ]; then
+		$START_FIREWALL
+	else
+		$START_FIREWALL switch_to_dhcp
+	fi
+else
+	$START_FIREWALL
+fi
+
+
+#upnp.sh
+if [ -f /bin/vpn.sh ]; then
+        echo 'Setup VPN'
+	vpn.sh all
+fi
+
+
+#add for pptp_over_dhcp
+if [ $WAN_DHCP = 8 ]; then
+	echo "-----------------ok, now will to connect to pptp sever--------------------"
+	pptp.sh $interface &	
+elif [ $WAN_DHCP = 9 ]; then
+	echo "-----------------ok, now will to connect to l2tp server-------------------"
+	l2tp.sh $interface &	
+fi
+
+syslogd.sh
+
+dhcp_loop.sh $ip $interface $subnet_ip $subnet
+

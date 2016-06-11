@@ -1,0 +1,40 @@
+#!/bin/sh
+# Sample udhcpc renew script
+
+RESOLV_CONF="/etc/udhcpc/resolv.conf"
+[ -n "$broadcast" ] && BROADCAST="broadcast $broadcast"
+[ -n "$subnet" ] && NETMASK="netmask $subnet"
+
+/sbin/ifconfig $interface $ip $BROADCAST $NETMASK
+
+if [ "$router" ]
+then
+	echo "deleting routers"
+	while route del default dev $interface
+	do :
+	done
+
+	for i in $router
+	do
+		route add -net default gw $i dev $interface
+		if [ -z "$default1" ]; then
+			default1=$i
+		fi
+	done
+fi
+
+echo -n > $RESOLV_CONF
+[ -n "$domain" ] && echo domain $domain >> $RESOLV_CONF
+
+for i in $dns
+do
+	echo adding dns $i
+	echo nameserver $i >> $RESOLV_CONF
+	if [ -n "$default1" ]; then
+		route add -host $i gw $default1 dev $interface
+	fi
+done
+#cp $RESOLV_CONF /etc/resolv.conf
+
+syslogd.sh
+/bin/port_trigger.sh init "$interface"

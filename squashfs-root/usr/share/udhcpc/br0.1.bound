@@ -1,0 +1,50 @@
+#!/bin/sh
+# Sample udhcpc renew script
+
+START_FIREWALL="/bin/firewall.sh"
+RESOLV_CONF="/etc/udhcpc/resolv.conf"
+[ -n "$broadcast" ] && BROADCAST="broadcast $broadcast"
+[ -n "$subnet" ] && NETMASK="netmask $subnet"
+
+TOOL=flash
+GETMIB="$TOOL get"
+
+/sbin/ifconfig $interface $ip $BROADCAST $NETMASK
+echo $ip > /tmp/lan_ip_by_dhcp
+echo $NETMASK > /tmp/lan_netmask_by_dhcp
+
+if [ "$router" ]
+then
+	echo "deleting routers"
+	while route del default dev $interface
+	do :
+	done
+
+	for i in $router
+	do
+		echo $i > /tmp/lan_gw_by_dhcp
+		route add -net default gw $i dev $interface
+		if [ -z "$default1" ]; then
+			default1=$i
+		fi
+	done
+fi
+
+echo -n > $RESOLV_CONF
+[ -n "$domain" ] && echo domain $domain >> $RESOLV_CONF
+
+for i in $dns
+do
+	echo adding dns $i
+	echo nameserver $i >> $RESOLV_CONF
+	if [ -n "$default1" ]; then
+		route add -host $i gw $default1 dev $interface
+	fi
+done
+
+cp $RESOLV_CONF /var/resolv.conf
+# start wlan application daemon
+#init.sh ap wlan_app
+$START_FIREWALL
+killall -9 ntp.sh 2>/dev/null 
+/bin/ntp.sh &
